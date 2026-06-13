@@ -1,4 +1,3 @@
-
 import aiohttp
 import asyncio
 import re
@@ -386,4 +385,4 @@ def format_record(stats: dict) -> str:
     w = stats.get("wins", "?")
     l = stats.get("losses", "?")
     d = stats.get("draws", "?")
-    return f"{w}-{l}-{
+    return f"{w}-{l}-{d}"
