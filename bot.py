@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -19,6 +20,7 @@ from dotenv import load_dotenv
 
 import database as db
 import services as svc
+import card_generator as cg
 
 load_dotenv()
 
@@ -69,13 +71,15 @@ def events_kb(grouped: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def fights_kb(fights: list[dict], event_idx: int) -> InlineKeyboardMarkup:
+def fights_kb(fights: list, event_idx: int) -> InlineKeyboardMarkup:
     buttons = []
     for i, fight in enumerate(fights):
         f1 = fight["fighter1"].split()[-1]
         f2 = fight["fighter2"].split()[-1]
+        o1 = svc.format_odds(fight.get("odds_f1"))
+        o2 = svc.format_odds(fight.get("odds_f2"))
         buttons.append([InlineKeyboardButton(
-            text=f"⚔️ {f1} vs {f2}",
+            text=f"⚔️ {f1}({o1}) vs {f2}({o2})",
             callback_data=f"fight_{event_idx}_{i}"
         )])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="make_prediction")])
@@ -85,15 +89,18 @@ def fights_kb(fights: list[dict], event_idx: int) -> InlineKeyboardMarkup:
 def winner_kb(fight: dict, event_idx: int, fight_idx: int) -> InlineKeyboardMarkup:
     f1 = fight["fighter1"]
     f2 = fight["fighter2"]
+    o1 = svc.format_odds(fight.get("odds_f1"))
+    o2 = svc.format_odds(fight.get("odds_f2"))
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"🔴 {f1}",
+            text=f"🔴 {f1} ({o1})",
             callback_data=f"pick_{event_idx}_{fight_idx}_f1"
         )],
         [InlineKeyboardButton(
-            text=f"🔵 {f2}",
+            text=f"🔵 {f2} ({o2})",
             callback_data=f"pick_{event_idx}_{fight_idx}_f2"
         )],
+        [InlineKeyboardButton(text="🤝 Ничья", callback_data=f"pick_{event_idx}_{fight_idx}_draw")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data=f"event_{event_idx}")],
     ])
 
@@ -102,50 +109,13 @@ def winner_kb(fight: dict, event_idx: int, fight_idx: int) -> InlineKeyboardMark
 #  HELPERS
 # ─────────────────────────────────────────
 
-def format_datetime(iso: str) -> str:
-    if not iso:
-        return ""
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%d %b %Y, %H:%M UTC")
-    except Exception:
-        return iso
-
-
-def format_stats_text(name: str, stats: dict) -> str:
-    lines = [f"<b>{name}</b>"]
-    nick = stats.get("nickname", "")
-    if nick:
-        lines.append(f'<i>"{nick}"</i>')
-
-    record = svc.format_record(stats)
-    if record != "?-?-?":
-        lines.append(f"📊 Рекорд: <b>{record}</b>")
-
-    for key, label in [
-        ("height", "📏 Рост"), ("weight", "⚖️ Вес"),
-        ("reach", "💪 Размах рук"), ("stance", "🥊 Стойка"),
-        ("slpm", "⚡ Удары/мин"), ("str._acc.", "🎯 Точность"),
-        ("td_avg.", "🤼 Тейкдауны/15мин"), ("sub._avg.", "🔒 Сабмишны/15мин"),
-    ]:
-        val = stats.get(key, "")
-        if val:
-            lines.append(f"{label}: {val}")
-
-    return "\n".join(lines)
-
-
 async def load_and_cache_events(state: FSMContext) -> dict:
     data = await state.get_data()
     grouped = data.get("grouped_events")
     if not grouped:
-        # Берём официальные ивенты с ufc.com
         grouped = await svc.get_ufc_events_official()
-
-        # Добавляем коэффициенты к каждому бою
         for event_name, fights in grouped.items():
             grouped[event_name] = await svc.enrich_fights_with_odds(fights)
-
         await state.update_data(grouped_events=grouped)
     return grouped
 
@@ -164,7 +134,8 @@ async def cmd_start(message: Message):
     await message.answer(
         "👊 <b>UFC Predictions Bot</b>\n\n"
         "Делай прогнозы на бои UFC, зарабатывай очки и соревнуйся с другими!\n\n"
-        "За каждый правильный прогноз — <b>10 очков</b> 🏆",
+        "✅ Правильный прогноз — <b>10 очков</b>\n"
+        "🎯 Точный метод победы — <b>+5 очков</b> (скоро)",
         reply_markup=main_menu_kb(),
         parse_mode="HTML"
     )
@@ -242,18 +213,8 @@ async def show_fights(call: CallbackQuery, state: FSMContext):
     await state.update_data(current_event_idx=event_idx, current_event_name=event_name)
     await state.set_state(PredictState.choosing_fight)
 
-    lines = []
-    for f in fights:
-        o1 = svc.format_odds(f.get("odds_f1"))
-        o2 = svc.format_odds(f.get("odds_f2"))
-        wc = f.get("weight_class", "")
-        line = f"⚔️ {f['fighter1']} ({o1}) vs {f['fighter2']} ({o2})"
-        if wc:
-            line += f"\n   📌 {wc}"
-        lines.append(line)
-
     await call.message.edit_text(
-        f"🎯 <b>{event_name}</b>\n\n" + "\n\n".join(lines) + "\n\nВыбери бой:",
+        f"🎯 <b>{event_name}</b>\n\nВыбери бой:",
         reply_markup=fights_kb(fights, event_idx),
         parse_mode="HTML"
     )
@@ -278,52 +239,53 @@ async def show_fight_detail(call: CallbackQuery, state: FSMContext):
     await state.update_data(current_fight_idx=fight_idx)
     await state.set_state(PredictState.choosing_winner)
 
-    await call.message.edit_text(
-        f"⏳ Загружаю данные о бойцах...\n\n⚔️ <b>{f1}</b> vs <b>{f2}</b>",
+    # Показываем загрузку
+    loading_msg = await call.message.edit_text(
+        f"⏳ Загружаю карточку боя...\n\n⚔️ <b>{f1}</b> vs <b>{f2}</b>",
         parse_mode="HTML"
     )
 
-    # Параллельно грузим стату и фото
+    # Параллельно грузим всё
     (stats1, stats2), (photo1, photo2) = await asyncio.gather(
         svc.get_both_fighters_data(f1, f2),
         svc.get_both_fighters_photos(f1, f2),
     )
 
-    odds1 = svc.format_odds(fight.get("odds_f1"))
-    odds2 = svc.format_odds(fight.get("odds_f2"))
+    kb = winner_kb(fight, event_idx, fight_idx)
     wc = fight.get("weight_class", "")
+    o1 = fight.get("odds_f1")
+    o2 = fight.get("odds_f2")
 
-    text = (
+    caption = (
         f"⚔️ <b>{f1}</b> vs <b>{f2}</b>\n"
         + (f"📌 {wc}\n" if wc else "")
-        + f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔴 <b>{f1}</b> — коэф: <b>{odds1}</b>\n"
-        f"{format_stats_text(f1, stats1)}\n\n"
-        f"🔵 <b>{f2}</b> — коэф: <b>{odds2}</b>\n"
-        f"{format_stats_text(f2, stats2)}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        + f"\n🔴 {f1} — коэф: <b>{svc.format_odds(o1)}</b>\n"
+        f"🔵 {f2} — коэф: <b>{svc.format_odds(o2)}</b>\n\n"
         f"Кто победит? 👇"
     )
 
-    kb = winner_kb(fight, event_idx, fight_idx)
+    try:
+        # Генерируем красивую карточку
+        card_bytes = await cg.generate_fight_card(
+            fighter1=f1, fighter2=f2,
+            photo1_url=photo1, photo2_url=photo2,
+            stats1=stats1, stats2=stats2,
+            odds1=o1, odds2=o2,
+            weight_class=wc,
+        )
 
-    # Пытаемся отправить с фото
-    if photo1 or photo2:
-        photo_url = photo1 or photo2
-        try:
-            await call.message.delete()
-            await bot.send_photo(
-                call.from_user.id,
-                photo=photo_url,
-                caption=text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-            return
-        except Exception:
-            pass
-
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await call.message.delete()
+        await bot.send_photo(
+            call.from_user.id,
+            photo=BufferedInputFile(card_bytes, filename="fight_card.png"),
+            caption=caption,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log.error(f"Card generation error: {e}")
+        # Fallback — просто текст
+        await call.message.edit_text(caption, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("pick_"))
@@ -332,7 +294,7 @@ async def save_prediction(call: CallbackQuery, state: FSMContext):
     parts = call.data.split("_")
     event_idx = int(parts[1])
     fight_idx = int(parts[2])
-    choice = parts[3]
+    choice = parts[3]  # f1, f2, draw
 
     grouped = await load_and_cache_events(state)
     event_names = list(grouped.keys())
@@ -340,10 +302,20 @@ async def save_prediction(call: CallbackQuery, state: FSMContext):
     fights = grouped[event_name]
     fight = fights[fight_idx]
 
-    predicted_winner = fight["fighter1"] if choice == "f1" else fight["fighter2"]
-    fight_id = fight["id"]
     f1 = fight["fighter1"]
     f2 = fight["fighter2"]
+
+    if choice == "f1":
+        predicted_winner = f1
+        emoji = "🔴"
+    elif choice == "f2":
+        predicted_winner = f2
+        emoji = "🔵"
+    else:
+        predicted_winner = "Draw"
+        emoji = "🤝"
+
+    fight_id = fight["id"]
 
     updated = db.save_prediction(
         user_id=call.from_user.id,
@@ -355,15 +327,16 @@ async def save_prediction(call: CallbackQuery, state: FSMContext):
     )
 
     action = "обновлён" if updated else "сохранён"
-    emoji = "🔴" if choice == "f1" else "🔵"
 
-    await call.message.edit_text(
-        f"✅ Прогноз {action}!\n\n"
-        f"⚔️ {f1} vs {f2}\n"
-        f"{emoji} Твой выбор: <b>{predicted_winner}</b>\n\n"
-        f"Удачи! 🍀",
+    await call.message.edit_caption(
+        caption=(
+            f"✅ Прогноз {action}!\n\n"
+            f"⚔️ <b>{f1}</b> vs <b>{f2}</b>\n"
+            f"{emoji} Твой выбор: <b>{predicted_winner}</b>\n\n"
+            f"Удачи! 🍀"
+        ),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚔️ Другой бой", callback_data=f"event_{event_idx}")],
+            [InlineKeyboardButton(text="⚔️ Следующий бой", callback_data=f"event_{event_idx}")],
             [InlineKeyboardButton(text="📋 Мои прогнозы", callback_data="my_predictions")],
             [InlineKeyboardButton(text="🏠 Меню", callback_data="back_main")],
         ]),
@@ -380,7 +353,6 @@ async def show_my_predictions(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
     grouped = await load_and_cache_events(state)
-
     if not grouped:
         await call.message.edit_text(
             "📋 Нет активных ивентов.",
@@ -531,4 +503,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
