@@ -1,4 +1,4 @@
-cat > /home/claude/ufc_bot/services.py << 'EOF'
+
 import aiohttp
 import asyncio
 import re
@@ -387,5 +387,5 @@ def format_record(stats: dict) -> str:
     l = stats.get("losses", "?")
     d = stats.get("draws", "?")
     return f"{w}-{l}-{d}"
-EOF
+
 echo "Done"
